@@ -1,9 +1,11 @@
 extern crate clap;
 extern crate csv;
+extern crate regex;
 
 use calamine::{open_workbook, Reader, Xlsx};
 use clap::{App, Arg};
 use csv::WriterBuilder;
+use regex::Regex;
 use std::error::Error;
 use std::fs::{self, DirBuilder};
 use std::path::{Path, PathBuf};
@@ -93,16 +95,16 @@ pub fn get_args() -> MyResult<Config> {
 
 // --------------------------------------------------
 pub fn run(config: Config) -> MyResult<()> {
-    for (i, file) in config.files.into_iter().enumerate() {
+    for (fnum, file) in config.files.into_iter().enumerate() {
         let path = Path::new(&file);
         let basename = path.file_stem().expect("basename");
-        let stem = &basename.to_string_lossy().to_string();
+        let stem = normalize(&basename.to_string_lossy().to_string());
 
-        println!("{}: {}", i, basename.to_string_lossy());
+        println!("{}: {}", fnum + 1, basename.to_string_lossy());
 
         let mut out_dir = PathBuf::from(&config.outdir);
         if config.make_dirs {
-            out_dir.push(stem)
+            out_dir.push(&stem)
         }
         if !out_dir.is_dir() {
             DirBuilder::new().recursive(true).create(&out_dir)?;
@@ -111,19 +113,22 @@ pub fn run(config: Config) -> MyResult<()> {
         let mut excel: Xlsx<_> = open_workbook(file)?;
         let sheets = excel.sheet_names().to_owned();
         for sheet in sheets {
-            let ext = if config.delimiter == 44 { "csv" } else { "txt" }
-            let out_file = format!("{}__{}.{}", stem, sheet, ext);
+            let ext = if config.delimiter == 44 { "csv" } else { "txt" };
+            let out_file = format!("{}__{}.{}", &stem, normalize(&sheet), ext);
             let out_path = &out_dir.join(out_file);
             let mut wtr = WriterBuilder::new()
                 .delimiter(config.delimiter)
                 .from_path(out_path)?;
-            println!("  Sheet '{}' -> '{}'", sheet, out_path.display());
+
+            println!("\tSheet '{}' -> '{}'", sheet, out_path.display());
             if let Some(Ok(r)) = excel.worksheet_range(&sheet) {
-                for row in r.rows() {
+                for (rnum, row) in r.rows().enumerate() {
                     let vals = row
                         .into_iter()
                         .map(|f| format!("{}", f))
+                        .map(|f| if rnum == 0 { normalize(&f) } else { f })
                         .collect::<Vec<String>>();
+
                     wtr.write_record(&vals)?;
                 }
             }
@@ -135,10 +140,52 @@ pub fn run(config: Config) -> MyResult<()> {
 }
 
 // --------------------------------------------------
+fn normalize(val: &String) -> String {
+    let mut new = val.to_string();
+    let camel = Regex::new(r"(.*)([a-z])([A-Z].*)").unwrap();
+
+    // First handle FooBar -> Foo_Bar
+    loop {
+        if let Some(cap) = camel.captures(&new) {
+            new = format!("{}{}_{}", &cap[1], &cap[2], &cap[3]);
+        } else {
+            break;
+        }
+    }
+
+    let spaces = Regex::new(r"[\s]+").unwrap();
+    let non_alphanum = Regex::new(r"[^a-z0-9_]").unwrap();
+    let mult_underbar = Regex::new(r"[_]+").unwrap();
+
+    new = new.to_ascii_lowercase();
+    new = spaces.replace_all(&new.to_string(), "_").to_string();
+    new = non_alphanum.replace_all(&new.to_string(), "").to_string();
+    mult_underbar.replace_all(&new.to_string(), "_").to_string()
+}
+
+// --------------------------------------------------
 fn is_file(path: &String) -> bool {
     if let Ok(meta) = fs::metadata(path) {
         return meta.is_file();
     } else {
         return false;
+    }
+}
+
+// --------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize() {
+        assert_eq!(normalize(&"".to_string()), "");
+        assert_eq!(normalize(&"ABC".to_string()), "abc");
+        assert_eq!(normalize(&"ABC  DEF".to_string()), "abc_def");
+        assert_eq!(normalize(&"foo-b*!a,r".to_string()), "foobar");
+        assert_eq!(normalize(&"Foo Bar".to_string()), "foo_bar");
+        assert_eq!(normalize(&"Foo / Bar".to_string()), "foo_bar");
+        assert_eq!(normalize(&"Foo (Bar)".to_string()), "foo_bar");
+        assert_eq!(normalize(&"FooBarBAZ".to_string()), "foo_bar_baz");
     }
 }

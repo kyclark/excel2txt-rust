@@ -1,6 +1,7 @@
 extern crate clap;
 extern crate csv;
 extern crate regex;
+extern crate tempdir;
 
 use calamine::{open_workbook, Reader, Xlsx};
 use clap::{App, Arg};
@@ -176,6 +177,8 @@ fn is_file(path: &String) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use tempdir::TempDir;
 
     #[test]
     fn test_normalize() {
@@ -187,5 +190,73 @@ mod tests {
         assert_eq!(normalize(&"Foo / Bar".to_string()), "foo_bar");
         assert_eq!(normalize(&"Foo (Bar)".to_string()), "foo_bar");
         assert_eq!(normalize(&"FooBarBAZ".to_string()), "foo_bar_baz");
+    }
+
+    #[test]
+    fn test_1() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let file = manifest_dir.join(PathBuf::from("tests/test1.xlsx"));
+        if let Ok(tmp_dir) = TempDir::new("test") {
+            let outdir = &tmp_dir.path().display().to_string();
+            let conf = Config {
+                files: vec![file.display().to_string()],
+                outdir: outdir.to_string(),
+                delimiter: 9, // tab
+                normalize: false,
+                make_dirs: false,
+            };
+
+            let _res = match run(conf) {
+                Ok(_) => {
+                    let expected_dir = PathBuf::from(outdir);
+                    assert!(expected_dir.is_dir());
+                    let expected_file = expected_dir.join("test1__sheet1.txt");
+                    assert!(expected_file.is_file());
+
+                    let contents =
+                        fs::read_to_string(expected_file).ok().unwrap();
+                    let lines: Vec<&str> = contents.split("\n").collect();
+                    assert_eq!(lines[0], "name\trank\tserial_number");
+                    assert_eq!(lines[1], "Ed\tCaptain\t12345");
+                    assert_eq!(lines[2], "Jorge\tMajor\t98765");
+                }
+                Err(x) => panic!("{:?}", x),
+            };
+        }
+    }
+
+    #[test]
+    fn test_2() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let file = manifest_dir.join(PathBuf::from("tests/Test 2.xlsx"));
+        if let Ok(tmp_dir) = TempDir::new("test") {
+            let outdir = &tmp_dir.path().display().to_string();
+            let conf = Config {
+                files: vec![file.display().to_string()],
+                outdir: outdir.to_string(),
+                delimiter: 44, // comma
+                normalize: true,
+                make_dirs: true,
+            };
+
+            let _res = match run(conf) {
+                Ok(_) => {
+                    let expected_dir =
+                        PathBuf::from(tmp_dir.path().join("test_2"));
+                    assert!(expected_dir.is_dir());
+                    let expected_file = expected_dir.join("test_2__sheet1.csv");
+                    assert!(expected_file.is_file());
+
+                    let contents =
+                        fs::read_to_string(expected_file).ok().unwrap();
+                    let lines: Vec<&str> = contents.split("\n").collect();
+                    assert_eq!(lines[0], "ice_cream_flavor,peoples_rank");
+                    assert_eq!(lines[1], "chocolate,1");
+                    assert_eq!(lines[2], "vanilla,2");
+                    assert_eq!(lines[3], "stravberry,3");
+                }
+                Err(x) => panic!("{:?}", x),
+            };
+        }
     }
 }
